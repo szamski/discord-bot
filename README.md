@@ -247,8 +247,8 @@ API key; without it tickets are still created, just untagged.
 
 The reporter is not named in the ticket body. The ticket carries them as its
 PostHog **person** instead: the Discord user id is the `distinct_id`, and the bot
-sets the `name` person property (global name, else username) so PostHog shows
-"Szamski" rather than a raw id. The id stays the key on purpose — Discord
+sets the `name` person property (global name, else username) so PostHog shows a
+readable name rather than a raw snowflake. The id stays the key on purpose — Discord
 usernames change, and released ones get recycled, so keying on a username would
 split one person's history on a rename and could merge two people on a reuse.
 

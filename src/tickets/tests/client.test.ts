@@ -92,7 +92,7 @@ describe("createTicket", () => {
   const args = {
     title: "App crashes",
     message: "It crashes on launch.",
-    authorName: "@maciej",
+    authorName: "@poster",
     discordUserId: "42",
   };
 
@@ -117,7 +117,7 @@ describe("createTicket", () => {
     expect(body.message).toContain("It crashes on launch.");
     expect(body.distinct_id).toBe(distinctIdFor("42"));
     expect(body.widget_session_id).toBe(widgetSessionId("42"));
-    expect(body.user_traits).toEqual({ name: "@maciej" });
+    expect(body.user_traits).toEqual({ name: "@poster" });
   });
 
   it("returns null on an API error", async () => {

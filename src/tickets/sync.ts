@@ -6,6 +6,7 @@ import {
   ticketsEnabled,
   updateTicket,
 } from "@/tickets/client.js";
+import { isStatusTagName } from "@/tickets/statusTags.js";
 
 /**
  * Discord → PostHog Support. Turns a watched forum's posts into tickets and
@@ -56,7 +57,10 @@ export async function openTicketForPost(args: {
   // The reporter isn't named in the body: the ticket carries them as its person
   // (Discord id as distinct id, display name from `name`), so repeating it here
   // would just be noise above every message.
-  const tagLine = args.tags.length ? `\n\nTags: ${args.tags.join(", ")}` : "";
+  // Drop the status tags the bot manages: they mirror the ticket's own state,
+  // so echoing "Tags: New" into the reporter's words is pure noise.
+  const postTags = args.tags.filter((t) => !isStatusTagName(t));
+  const tagLine = postTags.length ? `\n\nTags: ${postTags.join(", ")}` : "";
   const ticket = await createTicket({
     title: args.title,
     message: `${args.content}${tagLine}`,

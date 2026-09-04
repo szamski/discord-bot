@@ -13,7 +13,7 @@ vi.mock("@/tickets/client.js", () => client);
 const { addReplyToTicket, openTicketForPost } = await import("@/tickets/sync.js");
 const { addWatchedForum, getTicketForThread, linkTicket } = await import("@/db.js"); // real in-memory SQLite
 
-const AUTHOR = { id: "3210", username: "maciej", globalName: "Maciej" };
+const AUTHOR = { id: "3210", username: "poster", globalName: "Poster" };
 
 let counter = 0;
 /** Unique ids per test — the in-memory DB is shared across the file. */
@@ -55,8 +55,8 @@ describe("openTicketForPost", () => {
     expect(arg.message).toContain("Steps to reproduce…");
     expect(arg.message).toContain("Tags: bug, macos");
     // The reporter is NOT repeated in the body — the ticket's person carries them.
-    expect(arg.message).not.toContain("Maciej (@maciej)");
-    expect(arg.authorName).toBe("Maciej (@maciej)");
+    expect(arg.message).not.toContain("Poster (@poster)");
+    expect(arg.authorName).toBe("Poster (@poster)");
     expect(arg.discordUserId).toBe("3210");
 
     expect(getTicketForThread(threadId)).toMatchObject({
@@ -163,7 +163,7 @@ describe("addReplyToTicket", () => {
 
     expect(client.replyToTicket).toHaveBeenCalledWith({
       ticketId: "uuid-9",
-      message: "Maciej (@maciej) in Discord:\n\nany update?",
+      message: "Poster (@poster) in Discord:\n\nany update?",
       isPrivate: true,
     });
   });

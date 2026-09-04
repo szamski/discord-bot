@@ -19,6 +19,11 @@ import {
   upsertPosthog,
 } from "@/db.js";
 import { hostForRegion } from "@/regions.js";
+import {
+  isStatusTagName,
+  sameTagName,
+  STATUS_TAG_NAMES,
+} from "@/tickets/statusTags.js";
 import { nowMs } from "@/time.js";
 
 /**
@@ -44,37 +49,6 @@ const DISCORD_MESSAGE_LIMIT = 2000;
 const RESOLVED_STATUS = "resolved";
 // Discord caps a forum post at 5 applied tags.
 const MAX_APPLIED_TAGS = 5;
-
-/**
- * PostHog Support status → the forum tag that represents it. Set these up as
- * tags on each watched forum; a status with no matching tag is left alone
- * (logged), so an unknown status never clears the post's existing tag.
- */
-const STATUS_TAG_NAMES: Record<string, string> = {
-  new: "New",
-  open: "Open",
-  pending: "Pending",
-  on_hold: "On hold",
-  resolved: "Resolved",
-};
-
-/**
- * Compare tag names forgivingly: Discord's tag is typed by hand ("On hold",
- * "on-hold"), while PostHog's status is snake_case.
- */
-const normalizeTagName = (name: string): string =>
-  name.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-
-const sameTagName = (a: string, b: string): boolean =>
-  normalizeTagName(a) === normalizeTagName(b);
-
-const STATUS_TAG_SET = new Set(
-  Object.values(STATUS_TAG_NAMES).map(normalizeTagName),
-);
-
-/** Is this forum tag one of the status tags the bot manages? */
-const isStatusTagName = (name: string): boolean =>
-  STATUS_TAG_SET.has(normalizeTagName(name));
 
 /** Did this call fail because the Discord channel no longer exists? */
 const isUnknownChannel = (err: unknown): boolean =>
