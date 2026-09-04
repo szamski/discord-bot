@@ -13,6 +13,7 @@ import { applicationId } from "@/bridge/forward.js";
 import {
   addWatchedThread,
   clearConfig,
+  getThreadForTicket,
   removeWatchedThread,
   upsertPosthog,
 } from "@/db.js";
@@ -33,6 +34,8 @@ const EPHEMERAL_FLAG = 64;
 // Discord: "Cannot execute action on this channel type" — raised when creating a thread
 // on a channel that's already a thread (threads can't nest).
 const CANNOT_EXECUTE_ON_CHANNEL_TYPE = 50024;
+// Discord's own message length cap.
+const DISCORD_MESSAGE_LIMIT = 2000;
 
 export interface ActionResult {
   status: number;
@@ -157,6 +160,31 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
         clearConfig(guildId);
       }
       return { status: 200, body: { ok: true } };
+    }
+
+    case "ticket_reply": {
+      // PostHog → Discord for Support: a workflow (or anything else able to
+      // authenticate here) forwards a team reply on a ticket, and the bot posts
+      // it into the Discord thread that ticket came from. `ticket_id` accepts
+      // the UUID or the numeric ticket number.
+      const ticketRef = str(fields.ticket_id);
+      const content = str(fields.message);
+      if (!ticketRef || !content) {
+        return { status: 400, body: { error: "missing ticket_id or message" } };
+      }
+      const link = getThreadForTicket(ticketRef);
+      if (!link) {
+        // Not an error: most tickets (email, widget) have no Discord thread.
+        return { status: 200, body: { ok: true, skipped: "no linked thread" } };
+      }
+      const msg = (await rest.post(Routes.channelMessages(link.threadId), {
+        body: { content: content.slice(0, DISCORD_MESSAGE_LIMIT) },
+        auth: true,
+      })) as { id: string };
+      return {
+        status: 200,
+        body: { ok: true, thread_id: link.threadId, message_id: msg.id },
+      };
     }
 
     case "watch_thread":

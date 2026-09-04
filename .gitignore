@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .env
+# Local copies of .env (e.g. .env.bak) carry the same secrets, so never track them.
+.env.*
+!.env.example
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal

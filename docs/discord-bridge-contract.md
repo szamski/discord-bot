@@ -174,6 +174,7 @@ unknown op / missing required field), 500 (Discord call failed, `{error}`).
 | `add_reaction` / `remove_reaction` | `channel_id, message_id, emoji` | `{ "ok": true }` |
 | `connect_guild` | `guild_id, region ("us"\|"eu"), project_api_key` | `{ "ok": true }` |
 | `watch_thread` / `unwatch_thread` | `guild_id, thread_id` | `{ "ok": true }` |
+| `ticket_reply` | `ticket_id` (UUID **or** ticket number), `message` | `{ "ok": true, "thread_id": "...", "message_id": "..." }` |
 
 Notes:
 - **Token window.** Use `interaction_token` for the first reply and ephemeral
@@ -186,6 +187,12 @@ Notes:
   key + region for the guild. An empty/omitted `project_api_key` disconnects.
 - **`watch_thread`** is idempotent; the bot clears a guild's watched threads if
   it's removed from the server.
+- **`ticket_reply`** delivers a PostHog Support reply into the Discord thread the
+  ticket came from. A ticket with no linked thread (every email/widget ticket) is
+  **not** an error — the bot answers `200` with `skipped`, so a workflow can fire
+  on every ticket reply without filtering. Content is truncated to Discord's
+  2000-character limit. Requires the tickets integration to have linked the
+  thread in the first place (see the README).
 
 ---
 

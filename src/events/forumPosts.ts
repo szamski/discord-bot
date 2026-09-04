@@ -9,6 +9,7 @@ import {
 import { resolveRepliedTo } from "@/bridge/context.js";
 import { forwardForumPost, forwardMessage } from "@/bridge/forward.js";
 import { isWatchedForum, isWatchedThread } from "@/db.js";
+import { addReplyToTicket, openTicketForPost } from "@/tickets/sync.js";
 
 const STARTER_RETRY_MS = 1000;
 
@@ -80,6 +81,18 @@ export function register(client: Client): void {
       },
       replied_to: repliedTo,
     });
+
+    // Mirror the reply onto the thread's ticket, if it has one. Independent of
+    // the forward above: the bridge and Support are separate destinations.
+    await addReplyToTicket({
+      threadId: channel.id,
+      content: message.content,
+      author: {
+        id: message.author.id,
+        username: message.author.username,
+        globalName: message.author.globalName ?? null,
+      },
+    });
   });
 
   client.on(Events.ThreadCreate, async (thread, newlyCreated) => {
@@ -117,6 +130,20 @@ export function register(client: Client): void {
         username: starter.author.username,
         global_name: starter.author.globalName ?? null,
         bot: starter.author.bot,
+      },
+    });
+
+    // Open a Support ticket for the post and link it to this thread.
+    await openTicketForPost({
+      guildId: thread.guildId,
+      threadId: thread.id,
+      title: thread.name,
+      content: starter.content,
+      tags,
+      author: {
+        id: starter.author.id,
+        username: starter.author.username,
+        globalName: starter.author.globalName ?? null,
       },
     });
   });

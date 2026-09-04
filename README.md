@@ -200,6 +200,59 @@ these features — repo routing, project bindings, and account links all live in
 PostHog. Config is in `.env` (see `.env.example`); the actions port must be
 reachable by PostHog.
 
+## PostHog Support tickets
+
+Optional, off unless configured. When on, posts in a **watched forum**
+(`/ph forums watch`) become **PostHog Support tickets**, and the thread stays in
+sync with the ticket both ways:
+
+- **new forum post → ticket.** The post's title leads the first message, followed
+  by the body, applied tags, and the Discord author. The thread is linked to the
+  ticket in SQLite (`ticket_threads`), one ticket per thread.
+- **forum reply → ticket message.** Every subsequent reply in that thread is
+  appended to the ticket.
+- **ticket reply → forum.** A team reply in PostHog reaches the thread via the
+  actions API op `ticket_reply` — see [the contract](docs/discord-bridge-contract.md).
+  PostHog can't deliver to Discord itself (its channels are email / Slack /
+  Teams / GitHub), so this direction needs a **workflow** that fires on a ticket
+  reply and calls the bot's actions API.
+
+Configure with `POSTHOG_CONVERSATIONS_TOKEN` + `POSTHOG_CONVERSATIONS_ORIGIN`
+(see `.env.example`). Both must be set together; the bot fails fast on half a
+config.
+
+> [!IMPORTANT]
+> **Creating a ticket does not use the REST API.** `POST /conversations/tickets/`
+> answers `405` and points at `posthog.conversations.sendMessage()`, so there is
+> no documented server-side create. The bot therefore calls the same **widget**
+> endpoint the browser SDK uses, authenticating with the project's *public*
+> conversations token plus an `Origin` that must be on the project's Support
+> domain allowlist (Settings → Support) — otherwise PostHog answers
+> `403 Origin not allowed`. `Origin` is only a header, so nothing needs to be
+> hosted at that domain.
+>
+> That endpoint is **not part of PostHog's documented API** and can change
+> without notice. If it does, creates fail loudly in the logs, threads simply
+> have no ticket, and Discord is unaffected.
+
+A **personal API key** (`POSTHOG_TICKETS_API_KEY` + `POSTHOG_TICKETS_PROJECT_ID`,
+scope `ticket:write`) is optional and only needed to append replies to an
+existing ticket. It has real write authority, so it stays in env and is never
+stored in SQLite per guild, unlike the analytics key.
+
+Each Discord user gets a stable `widget_session_id` (a UUIDv5-shaped digest of
+their user id) and their Discord id as the PostHog `distinct_id`, so every
+ticket a person opens belongs to one conversation session and one person.
+
+**Replies from Discord land as internal notes.** A public reply on a ticket is
+*delivered* to the customer over the ticket's own channel, and Discord isn't one
+of those — so mirroring Discord content as a public reply would push it out over
+an unrelated channel. Inbound Discord messages are therefore stored as internal
+notes (`is_private: true`), prefixed with who wrote them.
+
+Failures are logged and never block Discord: if the API rejects a create, the
+thread simply has no ticket, and replies to an unlinked thread are ignored.
+
 ## Privacy
 
 - **Analytics** sends metadata only unless an admin opts the server in with `/ph analytics options capture_message_content:true` (off by default, including across upgrades). See [Message content](#message-content).
@@ -239,6 +292,7 @@ src/
   capture.ts         capture gates (built-in + captureCustomEvent for triggers)
   triggers.ts        trigger matching engine + runners
   snapshots.ts       periodic server_snapshot scheduler
+  tickets/           PostHog Support: client (HTTP) + sync (forum <-> ticket)
   props.ts           shared guild/channel property builders
   index.ts           client setup, handler wiring, graceful shutdown
   commandRegistry.ts per-guild slash-command registration

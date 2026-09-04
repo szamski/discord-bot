@@ -28,6 +28,36 @@ export interface BotConfig {
    * it at a local PostHog, e.g. http://127.0.0.1:8000. Unset in production.
    */
   bridgeBaseUrl?: string;
+  /**
+   * PostHog Support (tickets) integration. Optional: when absent the bot behaves
+   * exactly as before and never touches the tickets API.
+   */
+  tickets?: TicketsConfig;
+}
+
+export interface TicketsConfig {
+  /**
+   * The project's **public** conversations token (from Settings → Support).
+   * Publishable, like the analytics key — it only opens tickets.
+   */
+  conversationsToken: string;
+  /**
+   * Origin sent with widget calls. Must be one of the domains on the project's
+   * Support allowlist, or PostHog answers 403 "Origin not allowed".
+   */
+  origin: string;
+  /** Capture host the widget endpoint lives on (e.g. https://us.i.posthog.com). */
+  captureHost: string;
+  /** App host the REST tickets API lives on (e.g. https://us.posthog.com). */
+  appHost: string;
+  /**
+   * Optional personal API key with the `ticket:write` scope, needed only to
+   * append messages to an existing ticket. Creating tickets doesn't use it.
+   * It carries real write authority, so it stays in env and never in SQLite.
+   */
+  restApiKey?: string;
+  /** Numeric project id — required alongside {@link restApiKey}. */
+  projectId?: string;
 }
 
 function positiveNumber(name: string, fallback: number): number {
@@ -63,6 +93,56 @@ function requiredBind(name: string): { host: string; port: number } {
   return { host, port };
 }
 
+/** Default PostHog Cloud hosts for the tickets integration (US region). */
+const DEFAULT_TICKETS_APP_HOST = "https://us.posthog.com";
+const DEFAULT_TICKETS_CAPTURE_HOST = "https://us.i.posthog.com";
+
+/**
+ * Read the tickets config, or return undefined when the integration isn't
+ * configured. The conversations token and origin are what make it work at all,
+ * so they're required together; the REST key is a separate, optional half that
+ * only enables appending to existing tickets.
+ */
+function ticketsConfig(): TicketsConfig | undefined {
+  const conversationsToken = process.env.POSTHOG_CONVERSATIONS_TOKEN?.trim();
+  const origin = process.env.POSTHOG_CONVERSATIONS_ORIGIN?.trim().replace(/\/+$/, "");
+  if (!conversationsToken && !origin) return undefined;
+  if (!conversationsToken || !origin) {
+    throw new Error(
+      "POSTHOG_CONVERSATIONS_TOKEN and POSTHOG_CONVERSATIONS_ORIGIN must be set " +
+        "together (or both left unset to disable the tickets integration). The " +
+        "origin must be a domain on the project's Support allowlist."
+    );
+  }
+
+  const restApiKey = process.env.POSTHOG_TICKETS_API_KEY?.trim() || undefined;
+  const projectId = process.env.POSTHOG_TICKETS_PROJECT_ID?.trim() || undefined;
+  if (Boolean(restApiKey) !== Boolean(projectId)) {
+    throw new Error(
+      "POSTHOG_TICKETS_API_KEY and POSTHOG_TICKETS_PROJECT_ID must be set together " +
+        "(both are only needed to append messages to existing tickets)."
+    );
+  }
+  if (projectId && !/^\d+$/.test(projectId)) {
+    throw new Error(
+      `POSTHOG_TICKETS_PROJECT_ID must be a numeric project id (got "${projectId}").`
+    );
+  }
+
+  return {
+    conversationsToken,
+    origin,
+    captureHost:
+      process.env.POSTHOG_TICKETS_CAPTURE_HOST?.trim().replace(/\/+$/, "") ||
+      DEFAULT_TICKETS_CAPTURE_HOST,
+    appHost:
+      process.env.POSTHOG_TICKETS_HOST?.trim().replace(/\/+$/, "") ||
+      DEFAULT_TICKETS_APP_HOST,
+    restApiKey,
+    projectId,
+  };
+}
+
 export const config: BotConfig = {
   discordToken: required("DISCORD_BOT_TOKEN"),
   discordClientId: required("DISCORD_APPLICATION_ID"),
@@ -76,4 +156,5 @@ export const config: BotConfig = {
   sharedSecret: required("POSTHOG_DISCORD_SHARED_SECRET"),
   actionsBind: requiredBind("BOT_ACTIONS_BIND"),
   bridgeBaseUrl: process.env.POSTHOG_BRIDGE_BASE_URL?.trim().replace(/\/+$/, "") || undefined,
+  tickets: ticketsConfig(),
 };

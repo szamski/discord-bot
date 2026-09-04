@@ -188,3 +188,76 @@ describe("actions HTTP server", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("ticket_reply", () => {
+  it("posts a team reply into the ticket's linked Discord thread", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-tr", "thread-tr", "uuid-tr", 42, 1);
+    rest.post.mockResolvedValue({ id: "m9" });
+
+    const res = await handleAction("ticket_reply", {
+      ticket_id: "uuid-tr",
+      message: "We shipped a fix.",
+    });
+
+    expect(rest.post).toHaveBeenCalledWith(Routes.channelMessages("thread-tr"), {
+      body: { content: "We shipped a fix." },
+      auth: true,
+    });
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, thread_id: "thread-tr", message_id: "m9" },
+    });
+  });
+
+  it("resolves the thread by numeric ticket number too", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-tn", "thread-tn", "uuid-tn", 77, 1);
+    rest.post.mockResolvedValue({ id: "m10" });
+
+    const res = await handleAction("ticket_reply", { ticket_id: "77", message: "hi" });
+
+    expect(rest.post).toHaveBeenCalledWith(Routes.channelMessages("thread-tn"), {
+      body: { content: "hi" },
+      auth: true,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("skips (200) a ticket with no Discord thread — email/widget tickets", async () => {
+    const res = await handleAction("ticket_reply", {
+      ticket_id: "uuid-unknown",
+      message: "hello",
+    });
+    expect(rest.post).not.toHaveBeenCalled();
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, skipped: "no linked thread" },
+    });
+  });
+
+  it("truncates to Discord's 2000-character limit", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-long", "thread-long", "uuid-long", 78, 1);
+    rest.post.mockResolvedValue({ id: "m11" });
+
+    await handleAction("ticket_reply", {
+      ticket_id: "uuid-long",
+      message: "x".repeat(2500),
+    });
+
+    const body = rest.post.mock.calls[0][1].body as { content: string };
+    expect(body.content).toHaveLength(2000);
+  });
+
+  it("rejects a call without ticket_id or message", async () => {
+    expect(await handleAction("ticket_reply", { message: "m" })).toEqual({
+      status: 400,
+      body: { error: "missing ticket_id or message" },
+    });
+    expect(await handleAction("ticket_reply", { ticket_id: "u" })).toEqual({
+      status: 400,
+      body: { error: "missing ticket_id or message" },
+    });
+  });
+});

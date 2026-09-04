@@ -128,6 +128,21 @@ db.exec(`
     thread_id TEXT NOT NULL,
     PRIMARY KEY (guild_id, thread_id)
   );
+
+  -- Discord forum thread <-> PostHog Support ticket, one row per linked pair.
+  -- Keyed on thread_id (a thread maps to exactly one ticket); ticket_id is
+  -- indexed because the inbound direction looks a thread up *by ticket*.
+  CREATE TABLE IF NOT EXISTS ticket_threads (
+    thread_id     TEXT PRIMARY KEY,
+    guild_id      TEXT    NOT NULL,
+    ticket_id     TEXT    NOT NULL,
+    ticket_number INTEGER,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_ticket_threads_ticket
+    ON ticket_threads(ticket_id);
+  CREATE INDEX IF NOT EXISTS idx_ticket_threads_guild
+    ON ticket_threads(guild_id);
 `);
 
 // Databases created before message-content capture existed lack the column;
@@ -259,15 +274,17 @@ const deleteAllTriggersStmt = db.prepare<[string]>(
 );
 
 /**
- * Remove everything stored for a guild — config, triggers, and watched forums.
- * Used when the bot is removed from a server so we don't retain its PostHog key
- * or settings. (No FK to `guild_config`, so each table is deleted explicitly.)
+ * Remove everything stored for a guild — config, triggers, watched forums, and
+ * ticket links. Used when the bot is removed from a server so we don't retain
+ * its PostHog key or settings. (No FK to `guild_config`, so each table is
+ * deleted explicitly.)
  */
 export function purgeGuild(guildId: string): void {
   deleteStmt.run(guildId);
   deleteAllTriggersStmt.run(guildId);
   deleteAllWatchedForumsStmt.run(guildId);
   deleteAllWatchedThreadsStmt.run(guildId);
+  deleteAllTicketLinksStmt.run(guildId);
   invalidateConfigCache(guildId);
   invalidateTriggersCache(guildId);
 }
@@ -461,6 +478,84 @@ export function removeWatchedThread(guildId: string, threadId: string): boolean 
 /** Whether a specific thread is watched (hot path on every message). */
 export function isWatchedThread(guildId: string, threadId: string): boolean {
   return isWatchedThreadStmt.get(guildId, threadId) !== undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Ticket links (Discord forum thread <-> PostHog Support ticket)
+// ---------------------------------------------------------------------------
+
+/** A linked Discord thread / PostHog ticket pair. */
+export interface TicketLink {
+  threadId: string;
+  guildId: string;
+  ticketId: string;
+  ticketNumber: number | null;
+}
+
+interface TicketLinkRow {
+  thread_id: string;
+  guild_id: string;
+  ticket_id: string;
+  ticket_number: number | null;
+}
+
+const rowToTicketLink = (row: TicketLinkRow): TicketLink => ({
+  threadId: row.thread_id,
+  guildId: row.guild_id,
+  ticketId: row.ticket_id,
+  ticketNumber: row.ticket_number,
+});
+
+const linkTicketStmt = db.prepare<[string, string, string, number | null, number]>(
+  `INSERT INTO ticket_threads (thread_id, guild_id, ticket_id, ticket_number, created_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(thread_id) DO NOTHING`
+);
+const ticketForThreadStmt = db.prepare<[string]>(
+  "SELECT thread_id, guild_id, ticket_id, ticket_number FROM ticket_threads WHERE thread_id = ?"
+);
+const threadForTicketStmt = db.prepare<[string]>(
+  "SELECT thread_id, guild_id, ticket_id, ticket_number FROM ticket_threads WHERE ticket_id = ?"
+);
+const threadForTicketNumberStmt = db.prepare<[number]>(
+  "SELECT thread_id, guild_id, ticket_id, ticket_number FROM ticket_threads WHERE ticket_number = ?"
+);
+const deleteAllTicketLinksStmt = db.prepare<[string]>(
+  "DELETE FROM ticket_threads WHERE guild_id = ?"
+);
+
+/**
+ * Record that a thread is backed by a ticket. Idempotent: an existing link for
+ * the thread wins, so a duplicate ThreadCreate can't repoint it at a second
+ * ticket. Returns true when the link was newly created.
+ */
+export function linkTicket(
+  guildId: string,
+  threadId: string,
+  ticketId: string,
+  ticketNumber: number | null,
+  now: number
+): boolean {
+  return (
+    linkTicketStmt.run(threadId, guildId, ticketId, ticketNumber, now).changes > 0
+  );
+}
+
+/** The ticket backing a thread, if any (hot path on every forum reply). */
+export function getTicketForThread(threadId: string): TicketLink | null {
+  const row = ticketForThreadStmt.get(threadId) as TicketLinkRow | undefined;
+  return row ? rowToTicketLink(row) : null;
+}
+
+/**
+ * The thread backing a ticket, looked up by the ticket's UUID or its numeric
+ * ticket number — inbound webhooks may carry either.
+ */
+export function getThreadForTicket(ticketRef: string): TicketLink | null {
+  const row = (/^\d+$/.test(ticketRef)
+    ? threadForTicketNumberStmt.get(Number(ticketRef))
+    : threadForTicketStmt.get(ticketRef)) as TicketLinkRow | undefined;
+  return row ? rowToTicketLink(row) : null;
 }
 
 export function closeDb(): void {

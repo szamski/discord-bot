@@ -8,9 +8,12 @@ import {
   clearConfig,
   countTriggers,
   DEFAULT_POSTHOG_HOST,
+  getThreadForTicket,
+  getTicketForThread,
   getTrigger,
   isWatchedForum,
   isWatchedThread,
+  linkTicket,
   listTriggers,
   listWatchedForums,
   MAX_TRIGGERS_PER_GUILD,
@@ -234,5 +237,49 @@ describe("watched threads", () => {
     addWatchedThread(g, "t1");
     purgeGuild(g);
     expect(isWatchedThread(g, "t1")).toBe(false);
+  });
+});
+
+describe("ticket links", () => {
+  it("links a thread to a ticket and reads it back", () => {
+    const g = guild();
+    expect(getTicketForThread("th1")).toBeNull();
+    expect(linkTicket(g, "th1", "uuid-1", 25, NOW)).toBe(true);
+    expect(getTicketForThread("th1")).toEqual({
+      threadId: "th1",
+      guildId: g,
+      ticketId: "uuid-1",
+      ticketNumber: 25,
+    });
+  });
+
+  it("keeps the existing link when the same thread is linked twice", () => {
+    const g = guild();
+    linkTicket(g, "th2", "first", 1, NOW);
+    expect(linkTicket(g, "th2", "second", 2, NOW)).toBe(false);
+    expect(getTicketForThread("th2")?.ticketId).toBe("first");
+  });
+
+  it("looks a thread up by ticket uuid or numeric ticket number", () => {
+    const g = guild();
+    linkTicket(g, "th3", "uuid-3", 33, NOW);
+    expect(getThreadForTicket("uuid-3")?.threadId).toBe("th3");
+    expect(getThreadForTicket("33")?.threadId).toBe("th3");
+    expect(getThreadForTicket("nope")).toBeNull();
+    expect(getThreadForTicket("999")).toBeNull();
+  });
+
+  it("accepts a null ticket number", () => {
+    const g = guild();
+    linkTicket(g, "th4", "uuid-4", null, NOW);
+    expect(getTicketForThread("th4")?.ticketNumber).toBeNull();
+  });
+
+  it("is cleared by purgeGuild", () => {
+    const g = guild();
+    linkTicket(g, "th5", "uuid-5", 5, NOW);
+    purgeGuild(g);
+    expect(getTicketForThread("th5")).toBeNull();
+    expect(getThreadForTicket("uuid-5")).toBeNull();
   });
 });
