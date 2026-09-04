@@ -211,6 +211,14 @@ export const phCommand = new SlashCommandBuilder()
               .addChannelTypes(ChannelType.GuildForum)
               .setRequired(true)
           )
+          .addStringOption((o) =>
+            o
+              .setName("tag")
+              .setDescription(
+                "PostHog Support tag for tickets from this forum (e.g. bug)"
+              )
+              .setMaxLength(64)
+          )
       )
       .addSubcommand((sub) =>
         sub

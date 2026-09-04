@@ -36,6 +36,34 @@ const EPHEMERAL_FLAG = 64;
 const CANNOT_EXECUTE_ON_CHANNEL_TYPE = 50024;
 // Discord's own message length cap.
 const DISCORD_MESSAGE_LIMIT = 2000;
+// The PostHog Support status that closes a thread.
+const RESOLVED_STATUS = "resolved";
+
+/**
+ * How each PostHog Support status reads in Discord. Unknown statuses fall back
+ * to their raw name rather than being dropped, so a new status still shows up.
+ */
+const STATUS_LABELS: Record<string, string> = {
+  new: "🆕 New",
+  open: "📬 Open — we're on it",
+  pending: "⏳ Waiting for your reply",
+  on_hold: "⏸️ On hold",
+  resolved: "✅ Resolved",
+};
+
+const statusLabel = (status: string): string => STATUS_LABELS[status] ?? status;
+
+/** The message posted into a thread when its ticket's status changes. */
+function statusNotice(status: string, previous: string | null): string {
+  const now = statusLabel(status);
+  const head =
+    previous && previous !== status
+      ? `Status: ${statusLabel(previous)} → **${now}**`
+      : `Status: **${now}**`;
+  return status === RESOLVED_STATUS
+    ? `${head}\n\nThis thread is now closed. Reply here if you need to reopen it.`
+    : head;
+}
 
 export interface ActionResult {
   status: number;
@@ -184,6 +212,44 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
       return {
         status: 200,
         body: { ok: true, thread_id: link.threadId, message_id: msg.id },
+      };
+    }
+
+    case "ticket_status": {
+      // PostHog → Discord: a ticket's status changed (driven by a workflow on
+      // `$conversation_ticket_status_changed`). The bot mirrors it into the
+      // linked thread, and archives the thread once the ticket is resolved.
+      const ticketRef = str(fields.ticket_id);
+      const status = str(fields.status).toLowerCase();
+      if (!ticketRef || !status) {
+        return { status: 400, body: { error: "missing ticket_id or status" } };
+      }
+      const link = getThreadForTicket(ticketRef);
+      if (!link) {
+        return { status: 200, body: { ok: true, skipped: "no linked thread" } };
+      }
+
+      const previous = fields.previous_status
+        ? str(fields.previous_status).toLowerCase()
+        : null;
+      await rest.post(Routes.channelMessages(link.threadId), {
+        body: { content: statusNotice(status, previous) },
+        auth: true,
+      });
+
+      // Resolved closes the thread. Archive only — locking would stop the
+      // reporter replying, and a reply is exactly how a premature resolve gets
+      // reopened (their message un-archives the thread).
+      let archived = false;
+      if (status === RESOLVED_STATUS) {
+        await rest.patch(Routes.channel(link.threadId), {
+          body: { archived: true },
+        });
+        archived = true;
+      }
+      return {
+        status: 200,
+        body: { ok: true, thread_id: link.threadId, archived },
       };
     }
 

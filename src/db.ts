@@ -120,6 +120,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS watched_forums (
     guild_id   TEXT NOT NULL,
     channel_id TEXT NOT NULL,
+    -- PostHog Support tag applied to tickets opened from this forum, e.g.
+    -- "bug" for #bug-reports. NULL means no tag.
+    ticket_tag TEXT,
     PRIMARY KEY (guild_id, channel_id)
   );
 
@@ -150,6 +153,15 @@ db.exec(`
 const guildConfigColumns = db
   .prepare("PRAGMA table_info(guild_config)")
   .all() as { name: string }[];
+// Databases created before per-forum ticket tags lack the column; add it as
+// nullable so existing watched forums keep working with no tag.
+const watchedForumColumns = db
+  .prepare("PRAGMA table_info(watched_forums)")
+  .all() as { name: string }[];
+if (!watchedForumColumns.some((c) => c.name === "ticket_tag")) {
+  db.exec("ALTER TABLE watched_forums ADD COLUMN ticket_tag TEXT");
+}
+
 if (!guildConfigColumns.some((c) => c.name === "capture_message_content")) {
   db.exec(
     "ALTER TABLE guild_config ADD COLUMN capture_message_content INTEGER NOT NULL DEFAULT 0"
@@ -409,8 +421,9 @@ export function setTriggerEnabled(
 // Watched forums (forum channels whose new posts are forwarded to PostHog Code)
 // ---------------------------------------------------------------------------
 
-const addWatchedForumStmt = db.prepare<[string, string]>(
-  "INSERT OR IGNORE INTO watched_forums (guild_id, channel_id) VALUES (?, ?)"
+const addWatchedForumStmt = db.prepare<[string, string, string | null]>(
+  `INSERT INTO watched_forums (guild_id, channel_id, ticket_tag) VALUES (?, ?, ?)
+   ON CONFLICT(guild_id, channel_id) DO UPDATE SET ticket_tag = excluded.ticket_tag`
 );
 const removeWatchedForumStmt = db.prepare<[string, string]>(
   "DELETE FROM watched_forums WHERE guild_id = ? AND channel_id = ?"
@@ -418,16 +431,40 @@ const removeWatchedForumStmt = db.prepare<[string, string]>(
 const listWatchedForumsStmt = db.prepare<[string]>(
   "SELECT channel_id FROM watched_forums WHERE guild_id = ?"
 );
+const listWatchedForumsWithTagsStmt = db.prepare<[string]>(
+  "SELECT channel_id, ticket_tag FROM watched_forums WHERE guild_id = ?"
+);
 const isWatchedForumStmt = db.prepare<[string, string]>(
   "SELECT 1 FROM watched_forums WHERE guild_id = ? AND channel_id = ?"
+);
+const forumTicketTagStmt = db.prepare<[string, string]>(
+  "SELECT ticket_tag FROM watched_forums WHERE guild_id = ? AND channel_id = ?"
 );
 const deleteAllWatchedForumsStmt = db.prepare<[string]>(
   "DELETE FROM watched_forums WHERE guild_id = ?"
 );
 
-/** Start watching a forum channel. Returns true if it was newly added. */
-export function addWatchedForum(guildId: string, channelId: string): boolean {
-  return addWatchedForumStmt.run(guildId, channelId).changes > 0;
+/**
+ * Start watching a forum channel, optionally tagging the PostHog Support
+ * tickets it opens (e.g. "bug" for #bug-reports). Re-watching an already
+ * watched forum updates its tag. Returns true if it was newly added.
+ */
+export function addWatchedForum(
+  guildId: string,
+  channelId: string,
+  ticketTag: string | null = null
+): boolean {
+  const before = isWatchedForum(guildId, channelId);
+  addWatchedForumStmt.run(guildId, channelId, ticketTag);
+  return !before;
+}
+
+/** The PostHog Support tag configured for a watched forum, if any. */
+export function forumTicketTag(guildId: string, channelId: string): string | null {
+  const row = forumTicketTagStmt.get(guildId, channelId) as
+    | { ticket_tag: string | null }
+    | undefined;
+  return row?.ticket_tag ?? null;
 }
 
 /** Stop watching a forum channel. Returns true if it was being watched. */
@@ -440,6 +477,18 @@ export function listWatchedForums(guildId: string): string[] {
   return (listWatchedForumsStmt.all(guildId) as { channel_id: string }[]).map(
     (r) => r.channel_id
   );
+}
+
+/** Watched forums in a guild with their ticket tags, for `/ph forums list`. */
+export function listWatchedForumsWithTags(
+  guildId: string
+): { channelId: string; ticketTag: string | null }[] {
+  return (
+    listWatchedForumsWithTagsStmt.all(guildId) as {
+      channel_id: string;
+      ticket_tag: string | null;
+    }[]
+  ).map((r) => ({ channelId: r.channel_id, ticketTag: r.ticket_tag }));
 }
 
 /** Whether a specific forum channel is watched (hot path on thread creation). */
@@ -523,6 +572,9 @@ const threadForTicketNumberStmt = db.prepare<[number]>(
 const deleteAllTicketLinksStmt = db.prepare<[string]>(
   "DELETE FROM ticket_threads WHERE guild_id = ?"
 );
+const setTicketNumberStmt = db.prepare<[number, string]>(
+  "UPDATE ticket_threads SET ticket_number = ? WHERE thread_id = ?"
+);
 
 /**
  * Record that a thread is backed by a ticket. Idempotent: an existing link for
@@ -539,6 +591,14 @@ export function linkTicket(
   return (
     linkTicketStmt.run(threadId, guildId, ticketId, ticketNumber, now).changes > 0
   );
+}
+
+/**
+ * Backfill a link's ticket number. The widget create endpoint doesn't return
+ * one, so it's read back from a follow-up REST update.
+ */
+export function setTicketNumber(threadId: string, ticketNumber: number): void {
+  setTicketNumberStmt.run(ticketNumber, threadId);
 }
 
 /** The ticket backing a thread, if any (hot path on every forum reply). */

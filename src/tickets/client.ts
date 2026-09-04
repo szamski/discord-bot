@@ -68,7 +68,8 @@ export function widgetSessionId(discordUserId: string): string {
 /** PostHog distinct id for a Discord user — matches the analytics namespace. */
 export const distinctIdFor = (discordUserId: string): string => discordUserId;
 
-async function postJson(
+async function request(
+  method: "POST" | "PATCH",
   url: string,
   headers: Record<string, string>,
   body: unknown
@@ -77,7 +78,7 @@ async function postJson(
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     return await fetch(url, {
-      method: "POST",
+      method,
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -86,6 +87,12 @@ async function postJson(
     clearTimeout(timer);
   }
 }
+
+const postJson = (
+  url: string,
+  headers: Record<string, string>,
+  body: unknown
+): Promise<Response> => request("POST", url, headers, body);
 
 /**
  * Open a ticket for a Discord forum post via the widget endpoint. Returns null
@@ -137,6 +144,58 @@ export async function createTicket(args: {
     return { id: data.ticket_id, ticketNumber: null };
   } catch (err) {
     console.error("[tickets] create failed:", err);
+    return null;
+  }
+}
+
+/** Fields on a ticket the bot can change. */
+export interface TicketPatch {
+  tags?: string[];
+  status?: string;
+  priority?: string;
+}
+
+/**
+ * Update a ticket over the documented REST route, returning the ticket as
+ * PostHog now has it. Used to apply a forum's tag and to pick up the
+ * `ticket_number`, which the widget create endpoint doesn't return.
+ *
+ * `bulk_update_tags` is not an option here: it answers 403 "This action does
+ * not support personal API key access". Requires {@link TicketsConfig.restApiKey}.
+ */
+export async function updateTicket(
+  ticketId: string,
+  patch: TicketPatch
+): Promise<{ ticketNumber: number | null; status: string | null; tags: string[] } | null> {
+  const cfg = config.tickets;
+  if (!cfg?.restApiKey || !cfg.projectId) return null;
+
+  try {
+    const res = await request(
+      "PATCH",
+      `${cfg.appHost}/api/projects/${cfg.projectId}/conversations/tickets/${encodeURIComponent(ticketId)}/`,
+      { Authorization: `Bearer ${cfg.restApiKey}` },
+      patch
+    );
+    if (!res.ok) {
+      console.error(
+        `[tickets] update failed: ${res.status} ${await res.text().catch(() => "")}`
+      );
+      return null;
+    }
+    const data = (await res.json()) as {
+      ticket_number?: unknown;
+      status?: unknown;
+      tags?: unknown;
+    };
+    return {
+      ticketNumber:
+        typeof data.ticket_number === "number" ? data.ticket_number : null,
+      status: typeof data.status === "string" ? data.status : null,
+      tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
+    };
+  } catch (err) {
+    console.error("[tickets] update failed:", err);
     return null;
   }
 }

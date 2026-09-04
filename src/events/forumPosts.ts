@@ -137,6 +137,7 @@ export function register(client: Client): void {
     await openTicketForPost({
       guildId: thread.guildId,
       threadId: thread.id,
+      forumChannelId: thread.parentId,
       title: thread.name,
       content: starter.content,
       tags,

@@ -1,6 +1,11 @@
-import { getTicketForThread, linkTicket } from "@/db.js";
+import { forumTicketTag, getTicketForThread, linkTicket, setTicketNumber } from "@/db.js";
 import { nowMs } from "@/time.js";
-import { createTicket, replyToTicket, ticketsEnabled } from "@/tickets/client.js";
+import {
+  createTicket,
+  replyToTicket,
+  ticketsEnabled,
+  updateTicket,
+} from "@/tickets/client.js";
 
 /**
  * Discord → PostHog Support. Turns a watched forum's posts into tickets and
@@ -32,6 +37,8 @@ function authorLabel(author: TicketAuthor): string {
 export async function openTicketForPost(args: {
   guildId: string;
   threadId: string;
+  /** The forum the post was made in — decides the PostHog tag. */
+  forumChannelId: string;
   title: string;
   content: string;
   tags: string[];
@@ -64,8 +71,18 @@ export async function openTicketForPost(args: {
     );
     return;
   }
+  // Apply the forum's PostHog tag (e.g. "bug" for #bug-reports) and pick up the
+  // ticket number, which the widget create endpoint doesn't return. Best-effort:
+  // the link already stands, so a failure here costs a tag, not the ticket.
+  const tag = forumTicketTag(args.guildId, args.forumChannelId);
+  const updated = await updateTicket(ticket.id, tag ? { tags: [tag] } : {});
+  if (updated?.ticketNumber != null) {
+    setTicketNumber(args.threadId, updated.ticketNumber);
+  }
+
   console.log(
-    `[tickets] opened ticket ${ticket.ticketNumber ?? ticket.id} for thread ${args.threadId}.`
+    `[tickets] opened ticket ${updated?.ticketNumber ?? ticket.id} for thread ` +
+      `${args.threadId}${tag ? ` (tag: ${tag})` : ""}.`
   );
 }
 

@@ -6,7 +6,7 @@ import {
 
 import {
   addWatchedForum,
-  listWatchedForums,
+  listWatchedForumsWithTags,
   removeWatchedForum,
 } from "@/db.js";
 
@@ -29,11 +29,17 @@ export async function handleForumsWatch(
     return;
   }
 
-  const added = addWatchedForum(interaction.guildId, channel.id);
+  // Optional PostHog Support tag applied to tickets opened from this forum.
+  // Re-running watch with a different tag updates it.
+  const tag = interaction.options.getString("tag")?.trim() || null;
+  const added = addWatchedForum(interaction.guildId, channel.id, tag);
+  const tagNote = tag ? ` Tickets from it are tagged \`${tag}\`.` : "";
   await interaction.reply({
     content: added
-      ? `✅ Now forwarding new posts in <#${channel.id}> to PostHog Code.`
-      : `<#${channel.id}> is already being watched.`,
+      ? `✅ Now forwarding new posts in <#${channel.id}> to PostHog Code.${tagNote}`
+      : `<#${channel.id}> is already being watched.${
+          tag ? ` Tag updated to \`${tag}\`.` : " Its tag was cleared."
+        }`,
     ...EPHEMERAL,
   });
 }
@@ -59,14 +65,20 @@ export async function handleForumsList(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   if (!interaction.guildId) return;
-  const ids = listWatchedForums(interaction.guildId);
+  const forums = listWatchedForumsWithTags(interaction.guildId);
 
   await interaction.reply({
     content:
-      ids.length === 0
+      forums.length === 0
         ? "No forums are being watched. Add one with `/ph forums watch`."
-        : `📋 Watching ${ids.length} forum(s):\n` +
-          ids.map((id) => `• <#${id}>`).join("\n"),
+        : `📋 Watching ${forums.length} forum(s):\n` +
+          forums
+            .map(
+              (f) =>
+                `• <#${f.channelId}>` +
+                (f.ticketTag ? ` — tag \`${f.ticketTag}\`` : "")
+            )
+            .join("\n"),
     ...EPHEMERAL,
   });
 }

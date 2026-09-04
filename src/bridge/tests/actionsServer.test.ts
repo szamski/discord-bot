@@ -261,3 +261,82 @@ describe("ticket_reply", () => {
     });
   });
 });
+
+describe("ticket_status", () => {
+  it("mirrors a status change into the linked thread", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-st", "thread-st", "uuid-st", 50, 1);
+    rest.post.mockResolvedValue({ id: "m20" });
+
+    const res = await handleAction("ticket_status", {
+      ticket_id: "uuid-st",
+      status: "open",
+      previous_status: "new",
+    });
+
+    const body = rest.post.mock.calls[0][1].body as { content: string };
+    expect(body.content).toContain("🆕 New");
+    expect(body.content).toContain("📬 Open");
+    // Only resolved archives the thread.
+    expect(rest.patch).not.toHaveBeenCalled();
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, thread_id: "thread-st", archived: false },
+    });
+  });
+
+  it("archives the thread when the ticket is resolved", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-rs", "thread-rs", "uuid-rs", 51, 1);
+    rest.post.mockResolvedValue({ id: "m21" });
+    rest.patch.mockResolvedValue({});
+
+    const res = await handleAction("ticket_status", {
+      ticket_id: "uuid-rs",
+      status: "resolved",
+    });
+
+    const body = rest.post.mock.calls[0][1].body as { content: string };
+    expect(body.content).toContain("✅ Resolved");
+    expect(body.content).toContain("closed");
+    // Archived, not locked — a reply must still be able to reopen it.
+    expect(rest.patch).toHaveBeenCalledWith(Routes.channel("thread-rs"), {
+      body: { archived: true },
+    });
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, thread_id: "thread-rs", archived: true },
+    });
+  });
+
+  it("falls back to the raw name for an unknown status", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-uk", "thread-uk", "uuid-uk", 52, 1);
+    rest.post.mockResolvedValue({ id: "m22" });
+
+    await handleAction("ticket_status", { ticket_id: "uuid-uk", status: "escalated" });
+
+    const body = rest.post.mock.calls[0][1].body as { content: string };
+    expect(body.content).toContain("escalated");
+  });
+
+  it("skips (200) a ticket with no Discord thread", async () => {
+    const res = await handleAction("ticket_status", {
+      ticket_id: "uuid-none",
+      status: "resolved",
+    });
+    expect(rest.post).not.toHaveBeenCalled();
+    expect(rest.patch).not.toHaveBeenCalled();
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, skipped: "no linked thread" },
+    });
+  });
+
+  it("rejects a call without ticket_id or status", async () => {
+    expect(await handleAction("ticket_status", { status: "open" })).toEqual({
+      status: 400,
+      body: { error: "missing ticket_id or status" },
+    });
+  });
+});

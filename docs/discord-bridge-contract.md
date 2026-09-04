@@ -175,6 +175,7 @@ unknown op / missing required field), 500 (Discord call failed, `{error}`).
 | `connect_guild` | `guild_id, region ("us"\|"eu"), project_api_key` | `{ "ok": true }` |
 | `watch_thread` / `unwatch_thread` | `guild_id, thread_id` | `{ "ok": true }` |
 | `ticket_reply` | `ticket_id` (UUID **or** ticket number), `message` | `{ "ok": true, "thread_id": "...", "message_id": "..." }` |
+| `ticket_status` | `ticket_id`, `status`, `previous_status?` | `{ "ok": true, "thread_id": "...", "archived": bool }` |
 
 Notes:
 - **Token window.** Use `interaction_token` for the first reply and ephemeral
@@ -193,6 +194,11 @@ Notes:
   on every ticket reply without filtering. Content is truncated to Discord's
   2000-character limit. Requires the tickets integration to have linked the
   thread in the first place (see the README).
+- **`ticket_status`** mirrors a status change into the linked thread and, when
+  `status` is `resolved`, archives it. Same `skipped` behaviour for unlinked
+  tickets. The thread is archived but **not** locked: a reply must still be able
+  to reopen it, which un-archives the thread on Discord's side. Unknown statuses
+  are posted by their raw name rather than dropped.
 
 ---
 

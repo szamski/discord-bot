@@ -216,6 +216,43 @@ sync with the ticket both ways:
   PostHog can't deliver to Discord itself (its channels are email / Slack /
   Teams / GitHub), so this direction needs a **workflow** that fires on a ticket
   reply and calls the bot's actions API.
+- **status change → forum, and resolve closes the thread.** Op `ticket_status`
+  posts the new status into the thread; `resolved` also archives it. Archived but
+  not locked, so a reply reopens the thread. Same workflow mechanism as replies.
+
+### Per-forum tags
+
+`/ph forums watch <forum> [tag]` stores a PostHog Support tag per forum, so each
+forum's tickets are labelled on arrival:
+
+```
+/ph forums watch channel:#bug-reports      tag:bug
+/ph forums watch channel:#feature-requests tag:feature
+```
+
+Re-running `watch` with a different tag updates it; omitting `tag` clears it.
+`/ph forums list` shows each forum with its tag.
+
+The tag is applied by a follow-up `PATCH /conversations/tickets/:id/`, which also
+reports the `ticket_number` the widget create endpoint doesn't return. Note
+`bulk_update_tags` is **not** usable here: it answers `403 "This action does not
+support personal API key access"`. Tagging therefore needs the optional personal
+API key; without it tickets are still created, just untagged.
+
+### Wiring the return direction
+
+Both inbound ops need a PostHog **workflow** per event, with a webhook action
+pointing at the bot's actions API:
+
+| PostHog event | op to send |
+|---|---|
+| `$conversation_message_sent` (team reply) | `{"op":"ticket_reply","ticket_id":"…","message":"…"}` |
+| `$conversation_ticket_status_changed` | `{"op":"ticket_status","ticket_id":"…","status":"…","previous_status":"…"}` |
+
+Send `Authorization: Bearer <POSTHOG_DISCORD_SHARED_SECRET>`. The actions API
+must be reachable from PostHog, so `BOT_ACTIONS_BIND` on loopback will not work
+for this direction. Tickets with no linked thread answer `200 skipped`, so a
+workflow can fire on every ticket without filtering.
 
 Configure with `POSTHOG_CONVERSATIONS_TOKEN` + `POSTHOG_CONVERSATIONS_ORIGIN`
 (see `.env.example`). Both must be set together; the bot fails fast on half a

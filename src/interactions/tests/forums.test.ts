@@ -1,22 +1,28 @@
 import { ChannelType } from "discord.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { addWatchedForum, removeWatchedForum, listWatchedForums } = vi.hoisted(() => ({
-  addWatchedForum: vi.fn(),
-  removeWatchedForum: vi.fn(),
-  listWatchedForums: vi.fn(),
+const { addWatchedForum, removeWatchedForum, listWatchedForumsWithTags } = vi.hoisted(
+  () => ({
+    addWatchedForum: vi.fn(),
+    removeWatchedForum: vi.fn(),
+    listWatchedForumsWithTags: vi.fn(),
+  })
+);
+vi.mock("@/db.js", () => ({
+  addWatchedForum,
+  removeWatchedForum,
+  listWatchedForumsWithTags,
 }));
-vi.mock("@/db.js", () => ({ addWatchedForum, removeWatchedForum, listWatchedForums }));
 
 const { handleForumsWatch, handleForumsUnwatch, handleForumsList } = await import(
   "@/interactions/forums.js"
 );
 
-function ix(channel?: { id: string; type: ChannelType }) {
+function ix(channel?: { id: string; type: ChannelType }, tag?: string) {
   const reply = vi.fn(async () => {});
   return {
     guildId: "g",
-    options: { getChannel: () => channel },
+    options: { getChannel: () => channel, getString: () => tag ?? null },
     reply,
   };
 }
@@ -30,8 +36,17 @@ describe("handleForumsWatch", () => {
     addWatchedForum.mockReturnValue(true);
     const i = ix({ id: "f1", type: ChannelType.GuildForum });
     await handleForumsWatch(i as never);
-    expect(addWatchedForum).toHaveBeenCalledWith("g", "f1");
+    // No tag given → watched with a null ticket tag.
+    expect(addWatchedForum).toHaveBeenCalledWith("g", "f1", null);
     expect(replyText(i)).toContain("forwarding new posts");
+  });
+
+  it("passes a ticket tag through and mentions it", async () => {
+    addWatchedForum.mockReturnValue(true);
+    const i = ix({ id: "f1", type: ChannelType.GuildForum }, "bug");
+    await handleForumsWatch(i as never);
+    expect(addWatchedForum).toHaveBeenCalledWith("g", "f1", "bug");
+    expect(replyText(i)).toContain("`bug`");
   });
 
   it("notes when already watched", async () => {
@@ -68,15 +83,19 @@ describe("handleForumsUnwatch", () => {
 
 describe("handleForumsList", () => {
   it("lists watched forums", async () => {
-    listWatchedForums.mockReturnValue(["f1", "f2"]);
+    listWatchedForumsWithTags.mockReturnValue([
+      { channelId: "f1", ticketTag: "bug" },
+      { channelId: "f2", ticketTag: null },
+    ]);
     const i = ix();
     await handleForumsList(i as never);
     expect(replyText(i)).toContain("<#f1>");
+    expect(replyText(i)).toContain("`bug`");
     expect(replyText(i)).toContain("<#f2>");
   });
 
   it("handles the empty case", async () => {
-    listWatchedForums.mockReturnValue([]);
+    listWatchedForumsWithTags.mockReturnValue([]);
     const i = ix();
     await handleForumsList(i as never);
     expect(replyText(i)).toContain("No forums are being watched");

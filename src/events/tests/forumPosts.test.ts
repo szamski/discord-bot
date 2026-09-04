@@ -1,16 +1,22 @@
 import { ChannelType, Events } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { forwardForumPost, forwardMessage, isWatchedForum, isWatchedThread } = vi.hoisted(
-  () => ({
+const { forwardForumPost, forwardMessage, isWatchedForum, isWatchedThread, tickets } =
+  vi.hoisted(() => ({
     forwardForumPost: vi.fn(async () => {}),
     forwardMessage: vi.fn(async () => {}),
     isWatchedForum: vi.fn(() => true),
     isWatchedThread: vi.fn(() => false),
-  })
-);
+    // The Support integration hangs off the same handlers; stub it out so these
+    // tests stay about forwarding.
+    tickets: {
+      openTicketForPost: vi.fn(async () => {}),
+      addReplyToTicket: vi.fn(async () => {}),
+    },
+  }));
 vi.mock("@/bridge/forward.js", () => ({ forwardForumPost, forwardMessage }));
 vi.mock("@/db.js", () => ({ isWatchedForum, isWatchedThread }));
+vi.mock("@/tickets/sync.js", () => tickets);
 
 const { register } = await import("@/events/forumPosts.js");
 
