@@ -15,6 +15,7 @@ import {
   clearConfig,
   getThreadForTicket,
   removeWatchedThread,
+  unlinkTicket,
   upsertPosthog,
 } from "@/db.js";
 import { hostForRegion } from "@/regions.js";
@@ -34,35 +35,60 @@ const EPHEMERAL_FLAG = 64;
 // Discord: "Cannot execute action on this channel type" — raised when creating a thread
 // on a channel that's already a thread (threads can't nest).
 const CANNOT_EXECUTE_ON_CHANNEL_TYPE = 50024;
+// Discord: "Unknown Channel" — the thread was deleted.
+const UNKNOWN_CHANNEL = 10003;
+
 // Discord's own message length cap.
 const DISCORD_MESSAGE_LIMIT = 2000;
 // The PostHog Support status that closes a thread.
 const RESOLVED_STATUS = "resolved";
+// Discord caps a forum post at 5 applied tags.
+const MAX_APPLIED_TAGS = 5;
 
 /**
- * How each PostHog Support status reads in Discord. Unknown statuses fall back
- * to their raw name rather than being dropped, so a new status still shows up.
+ * PostHog Support status → the forum tag that represents it. Set these up as
+ * tags on each watched forum; a status with no matching tag is left alone
+ * (logged), so an unknown status never clears the post's existing tag.
  */
-const STATUS_LABELS: Record<string, string> = {
-  new: "🆕 New",
-  open: "📬 Open — we're on it",
-  pending: "⏳ Waiting for your reply",
-  on_hold: "⏸️ On hold",
-  resolved: "✅ Resolved",
+const STATUS_TAG_NAMES: Record<string, string> = {
+  new: "New",
+  open: "Open",
+  pending: "Pending",
+  on_hold: "On hold",
+  resolved: "Resolved",
 };
 
-const statusLabel = (status: string): string => STATUS_LABELS[status] ?? status;
+/**
+ * Compare tag names forgivingly: Discord's tag is typed by hand ("On hold",
+ * "on-hold"), while PostHog's status is snake_case.
+ */
+const normalizeTagName = (name: string): string =>
+  name.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 
-/** The message posted into a thread when its ticket's status changes. */
-function statusNotice(status: string, previous: string | null): string {
-  const now = statusLabel(status);
-  const head =
-    previous && previous !== status
-      ? `Status: ${statusLabel(previous)} → **${now}**`
-      : `Status: **${now}**`;
-  return status === RESOLVED_STATUS
-    ? `${head}\n\nThis thread is now closed. Reply here if you need to reopen it.`
-    : head;
+const sameTagName = (a: string, b: string): boolean =>
+  normalizeTagName(a) === normalizeTagName(b);
+
+const STATUS_TAG_SET = new Set(
+  Object.values(STATUS_TAG_NAMES).map(normalizeTagName),
+);
+
+/** Is this forum tag one of the status tags the bot manages? */
+const isStatusTagName = (name: string): boolean =>
+  STATUS_TAG_SET.has(normalizeTagName(name));
+
+/** Did this call fail because the Discord channel no longer exists? */
+const isUnknownChannel = (err: unknown): boolean =>
+  err instanceof DiscordAPIError && err.code === UNKNOWN_CHANNEL;
+
+/**
+ * A linked thread that Discord says is gone: forget the link so later ticket
+ * events stop retrying against it, and report a skip rather than an error —
+ * a workflow firing on every ticket shouldn't see 500s for a deleted thread.
+ */
+function threadGone(threadId: string): ActionResult {
+  unlinkTicket(threadId);
+  console.warn(`[bridge] thread ${threadId} is gone; unlinked its ticket.`);
+  return { status: 200, body: { ok: true, skipped: "thread deleted" } };
 }
 
 export interface ActionResult {
@@ -78,7 +104,10 @@ const str = (v: unknown): string => String(v ?? "");
  * Dispatch one action op to Discord. Pure of HTTP concerns so it can be unit
  * tested by calling it directly with a mocked `rest`.
  */
-export async function handleAction(op: string, fields: Fields): Promise<ActionResult> {
+export async function handleAction(
+  op: string,
+  fields: Fields,
+): Promise<ActionResult> {
   switch (op) {
     case "create_thread": {
       const channelId = str(fields.channel_id);
@@ -97,7 +126,10 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
       } catch (err) {
         // The channel is already a thread (threads can't nest) — run in it as-is.
         // Defensive: PostHog also forwards channel_is_thread to skip this call entirely.
-        if (err instanceof DiscordAPIError && err.code === CANNOT_EXECUTE_ON_CHANNEL_TYPE) {
+        if (
+          err instanceof DiscordAPIError &&
+          err.code === CANNOT_EXECUTE_ON_CHANNEL_TYPE
+        ) {
           return { status: 200, body: { thread_id: channelId } };
         }
         throw err;
@@ -105,7 +137,9 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
     }
 
     case "post_message": {
-      const token = fields.interaction_token ? str(fields.interaction_token) : undefined;
+      const token = fields.interaction_token
+        ? str(fields.interaction_token)
+        : undefined;
       const common = {
         content: fields.content,
         embeds: fields.embeds,
@@ -116,7 +150,10 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
       let auth: boolean;
       if (token) {
         route = Routes.webhook(applicationId, token);
-        body = { ...common, ...(fields.ephemeral ? { flags: EPHEMERAL_FLAG } : {}) };
+        body = {
+          ...common,
+          ...(fields.ephemeral ? { flags: EPHEMERAL_FLAG } : {}),
+        };
         auth = false; // interaction webhooks authenticate via the token in the URL
       } else {
         route = Routes.channelMessages(str(fields.target_id));
@@ -128,7 +165,9 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
     }
 
     case "edit_message": {
-      const token = fields.interaction_token ? str(fields.interaction_token) : undefined;
+      const token = fields.interaction_token
+        ? str(fields.interaction_token)
+        : undefined;
       const route = token
         ? Routes.webhookMessage(applicationId, token, "@original")
         : Routes.channelMessage(str(fields.target_id), str(fields.message_id));
@@ -145,7 +184,7 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
 
     case "delete_message": {
       await rest.delete(
-        Routes.channelMessage(str(fields.target_id), str(fields.message_id))
+        Routes.channelMessage(str(fields.target_id), str(fields.message_id)),
       );
       return { status: 200, body: { ok: true } };
     }
@@ -156,8 +195,8 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
         Routes.channelMessageOwnReaction(
           str(fields.channel_id),
           str(fields.message_id),
-          str(fields.emoji)
-        )
+          str(fields.emoji),
+        ),
       );
       return { status: 200, body: { ok: true } };
     }
@@ -167,8 +206,8 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
         Routes.channelMessageOwnReaction(
           str(fields.channel_id),
           str(fields.message_id),
-          str(fields.emoji)
-        )
+          str(fields.emoji),
+        ),
       );
       return { status: 200, body: { ok: true } };
     }
@@ -183,7 +222,12 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
       const apiKey = fields.project_api_key ? str(fields.project_api_key) : "";
       if (apiKey) {
         // Host is derived from the region, never taken as free text.
-        upsertPosthog(guildId, apiKey, hostForRegion(str(fields.region)), nowMs());
+        upsertPosthog(
+          guildId,
+          apiKey,
+          hostForRegion(str(fields.region)),
+          nowMs(),
+        );
       } else {
         clearConfig(guildId);
       }
@@ -205,20 +249,26 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
         // Not an error: most tickets (email, widget) have no Discord thread.
         return { status: 200, body: { ok: true, skipped: "no linked thread" } };
       }
-      const msg = (await rest.post(Routes.channelMessages(link.threadId), {
-        body: { content: content.slice(0, DISCORD_MESSAGE_LIMIT) },
-        auth: true,
-      })) as { id: string };
-      return {
-        status: 200,
-        body: { ok: true, thread_id: link.threadId, message_id: msg.id },
-      };
+      try {
+        const msg = (await rest.post(Routes.channelMessages(link.threadId), {
+          body: { content: content.slice(0, DISCORD_MESSAGE_LIMIT) },
+          auth: true,
+        })) as { id: string };
+        return {
+          status: 200,
+          body: { ok: true, thread_id: link.threadId, message_id: msg.id },
+        };
+      } catch (err) {
+        if (isUnknownChannel(err)) return threadGone(link.threadId);
+        throw err;
+      }
     }
 
     case "ticket_status": {
       // PostHog → Discord: a ticket's status changed (driven by a workflow on
-      // `$conversation_ticket_status_changed`). The bot mirrors it into the
-      // linked thread, and archives the thread once the ticket is resolved.
+      // `$conversation_ticket_status_changed`). The status lives in the post's
+      // forum **tag**, not in a message — swapping the tag keeps the thread
+      // readable instead of filling it with status chatter.
       const ticketRef = str(fields.ticket_id);
       const status = str(fields.status).toLowerCase();
       if (!ticketRef || !status) {
@@ -229,28 +279,73 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
         return { status: 200, body: { ok: true, skipped: "no linked thread" } };
       }
 
-      const previous = fields.previous_status
-        ? str(fields.previous_status).toLowerCase()
-        : null;
-      await rest.post(Routes.channelMessages(link.threadId), {
-        body: { content: statusNotice(status, previous) },
-        auth: true,
-      });
+      try {
+        const patch: Record<string, unknown> = {};
+        let appliedTag: string | null = null;
 
-      // Resolved closes the thread. Archive only — locking would stop the
-      // reporter replying, and a reply is exactly how a premature resolve gets
-      // reopened (their message un-archives the thread).
-      let archived = false;
-      if (status === RESOLVED_STATUS) {
-        await rest.patch(Routes.channel(link.threadId), {
-          body: { archived: true },
-        });
-        archived = true;
+        const wanted = STATUS_TAG_NAMES[status];
+        if (wanted) {
+          const thread = (await rest.get(Routes.channel(link.threadId))) as {
+            parent_id?: string | null;
+            applied_tags?: string[];
+          };
+          if (thread.parent_id) {
+            const forum = (await rest.get(
+              Routes.channel(thread.parent_id),
+            )) as {
+              available_tags?: { id: string; name: string }[];
+            };
+            const available = forum.available_tags ?? [];
+            const target = available.find((t) => sameTagName(t.name, wanted));
+            if (target) {
+              // Drop whichever status tag is on the post and add the new one,
+              // leaving any non-status tags (e.g. a triage label) untouched.
+              const statusTagIds = new Set(
+                available
+                  .filter((t) => isStatusTagName(t.name))
+                  .map((t) => t.id),
+              );
+              const kept = (thread.applied_tags ?? []).filter(
+                (id) => !statusTagIds.has(id),
+              );
+              // Discord caps a post at 5 applied tags.
+              patch.applied_tags = [...kept, target.id].slice(
+                0,
+                MAX_APPLIED_TAGS,
+              );
+              appliedTag = target.name;
+            } else {
+              console.warn(
+                `[bridge] forum ${thread.parent_id} has no "${wanted}" tag; status not reflected.`,
+              );
+            }
+          }
+        }
+
+        // Resolved closes the thread. Archive only — locking would stop the
+        // reporter replying, and a reply is exactly how a premature resolve gets
+        // reopened (their message un-archives the thread).
+        const archived = status === RESOLVED_STATUS;
+        if (archived) patch.archived = true;
+
+        // One PATCH so the tag swap and the archive land together; archiving
+        // first would make the tag write fail on a closed thread.
+        if (Object.keys(patch).length > 0) {
+          await rest.patch(Routes.channel(link.threadId), { body: patch });
+        }
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            thread_id: link.threadId,
+            applied_tag: appliedTag,
+            archived,
+          },
+        };
+      } catch (err) {
+        if (isUnknownChannel(err)) return threadGone(link.threadId);
+        throw err;
       }
-      return {
-        status: 200,
-        body: { ok: true, thread_id: link.threadId, archived },
-      };
     }
 
     case "watch_thread":
@@ -260,7 +355,10 @@ export async function handleAction(op: string, fields: Fields): Promise<ActionRe
       const guildId = str(fields.guild_id);
       const threadId = str(fields.thread_id);
       if (!guildId || !threadId) {
-        return { status: 400, body: { error: "missing guild_id or thread_id" } };
+        return {
+          status: 400,
+          body: { error: "missing guild_id or thread_id" },
+        };
       }
       if (op === "watch_thread") addWatchedThread(guildId, threadId);
       else removeWatchedThread(guildId, threadId);
@@ -296,7 +394,10 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const path = (req.url ?? "").split("?")[0];
 
   if (req.method === "GET" && path === "/health") {

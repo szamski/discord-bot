@@ -216,9 +216,12 @@ sync with the ticket both ways:
   PostHog can't deliver to Discord itself (its channels are email / Slack /
   Teams / GitHub), so this direction needs a **workflow** that fires on a ticket
   reply and calls the bot's actions API.
-- **status change → forum, and resolve closes the thread.** Op `ticket_status`
-  posts the new status into the thread; `resolved` also archives it. Archived but
-  not locked, so a reply reopens the thread. Same workflow mechanism as replies.
+- **status change → forum tag, and resolve closes the thread.** Op
+  `ticket_status` sets the post's forum **tag** rather than posting a message, so
+  the thread stays readable. Create tags named `New`, `Open`, `Pending`,
+  `On hold` and `Resolved` on each watched forum; the bot swaps only those and
+  leaves other tags alone. `resolved` also archives the thread — archived but not
+  locked, so a reply reopens it. Same workflow mechanism as replies.
 
 ### Per-forum tags
 
@@ -304,6 +307,24 @@ A `Dockerfile` is included. Mount a volume at `/data` so the SQLite config survi
 docker build -t discord-posthog-bot .
 docker run -d --env-file .env -v $(pwd)/data:/data discord-posthog-bot
 ```
+
+> [!IMPORTANT]
+> `--env-file .env` overrides the image's own `ENV`, so two variables need care:
+> - **`DATABASE_PATH`** must point *inside* the mounted volume (`/data/bot.sqlite`).
+>   A relative path from `.env` writes into the container and the per-guild config
+>   is lost on every restart.
+> - **`BOT_ACTIONS_BIND`** must bind `0.0.0.0` *inside* the container, or port
+>   mapping can't reach it. Keep the port private by publishing it narrowly
+>   (`-p 127.0.0.1:8080:8080`), not by binding to loopback in the container.
+>
+> Either set both in `.env` with Docker in mind, or pass `-e` overrides.
+
+> [!NOTE]
+> **After changing the `/ph` command tree, re-register it.** Commands are
+> registered per guild on `guildCreate` and Discord persists them server-side, so
+> a rebuild and restart do *not* publish a new option — it silently stays
+> invisible in Discord. Run `npm run register-commands -- <guild-id>` (or
+> `node dist/register-commands.js <guild-id>` in the container).
 
 ## Tests
 

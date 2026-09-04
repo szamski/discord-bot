@@ -4,7 +4,7 @@ import { DiscordAPIError, Routes } from "discord.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { rest } = vi.hoisted(() => ({
-  rest: { post: vi.fn(), patch: vi.fn(), delete: vi.fn(), put: vi.fn() },
+  rest: { post: vi.fn(), patch: vi.fn(), delete: vi.fn(), put: vi.fn(), get: vi.fn() },
 }));
 vi.mock("@/bridge/discordRest.js", () => ({ rest }));
 
@@ -263,10 +263,29 @@ describe("ticket_reply", () => {
 });
 
 describe("ticket_status", () => {
-  it("mirrors a status change into the linked thread", async () => {
+  const FORUM = "forum-1";
+  // Status tags plus one unrelated tag that must survive a status change.
+  const TAGS = [
+    { id: "t-new", name: "New" },
+    { id: "t-open", name: "Open" },
+    { id: "t-pending", name: "Pending" },
+    { id: "t-hold", name: "On hold" },
+    { id: "t-resolved", name: "Resolved" },
+    { id: "t-macos", name: "macOS" },
+  ];
+
+  /** Mock the two GETs the op makes: the thread, then its parent forum. */
+  function mockChannels(appliedTags: string[], tags = TAGS, parentId: string | null = FORUM) {
+    rest.get.mockImplementation(async (route: string) =>
+      route.includes(FORUM) ? { available_tags: tags } : { parent_id: parentId, applied_tags: appliedTags }
+    );
+  }
+
+  it("swaps the status tag and keeps unrelated tags", async () => {
     const { linkTicket } = await import("@/db.js");
     linkTicket("g-st", "thread-st", "uuid-st", 50, 1);
-    rest.post.mockResolvedValue({ id: "m20" });
+    mockChannels(["t-new", "t-macos"]);
+    rest.patch.mockResolvedValue({});
 
     const res = await handleAction("ticket_status", {
       ticket_id: "uuid-st",
@@ -274,21 +293,22 @@ describe("ticket_status", () => {
       previous_status: "new",
     });
 
-    const body = rest.post.mock.calls[0][1].body as { content: string };
-    expect(body.content).toContain("🆕 New");
-    expect(body.content).toContain("📬 Open");
-    // Only resolved archives the thread.
-    expect(rest.patch).not.toHaveBeenCalled();
+    // The old status tag is dropped, macOS stays, Open is added.
+    expect(rest.patch).toHaveBeenCalledWith(Routes.channel("thread-st"), {
+      body: { applied_tags: ["t-macos", "t-open"] },
+    });
+    // Status no longer shows up as a message in the thread.
+    expect(rest.post).not.toHaveBeenCalled();
     expect(res).toEqual({
       status: 200,
-      body: { ok: true, thread_id: "thread-st", archived: false },
+      body: { ok: true, thread_id: "thread-st", applied_tag: "Open", archived: false },
     });
   });
 
-  it("archives the thread when the ticket is resolved", async () => {
+  it("tags Resolved and archives in one patch", async () => {
     const { linkTicket } = await import("@/db.js");
     linkTicket("g-rs", "thread-rs", "uuid-rs", 51, 1);
-    rest.post.mockResolvedValue({ id: "m21" });
+    mockChannels(["t-open"]);
     rest.patch.mockResolvedValue({});
 
     const res = await handleAction("ticket_status", {
@@ -296,28 +316,64 @@ describe("ticket_status", () => {
       status: "resolved",
     });
 
-    const body = rest.post.mock.calls[0][1].body as { content: string };
-    expect(body.content).toContain("✅ Resolved");
-    expect(body.content).toContain("closed");
-    // Archived, not locked — a reply must still be able to reopen it.
+    // One call: archiving first would make the tag write fail on a closed thread.
+    expect(rest.patch).toHaveBeenCalledTimes(1);
     expect(rest.patch).toHaveBeenCalledWith(Routes.channel("thread-rs"), {
-      body: { archived: true },
+      body: { applied_tags: ["t-resolved"], archived: true },
     });
-    expect(res).toEqual({
-      status: 200,
-      body: { ok: true, thread_id: "thread-rs", archived: true },
+    expect(res.body).toMatchObject({ applied_tag: "Resolved", archived: true });
+  });
+
+  it("matches tag names loosely (on_hold → 'On hold')", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-oh", "thread-oh", "uuid-oh", 53, 1);
+    mockChannels([]);
+    rest.patch.mockResolvedValue({});
+
+    await handleAction("ticket_status", { ticket_id: "uuid-oh", status: "on_hold" });
+
+    expect(rest.patch).toHaveBeenCalledWith(Routes.channel("thread-oh"), {
+      body: { applied_tags: ["t-hold"] },
     });
   });
 
-  it("falls back to the raw name for an unknown status", async () => {
+  it("leaves tags alone when the forum has no matching tag", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-nt", "thread-nt", "uuid-nt", 54, 1);
+    mockChannels(["t-macos"], [{ id: "t-macos", name: "macOS" }]);
+
+    const res = await handleAction("ticket_status", { ticket_id: "uuid-nt", status: "open" });
+
+    expect(rest.patch).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ applied_tag: null, archived: false });
+  });
+
+  it("does nothing for an unknown status", async () => {
     const { linkTicket } = await import("@/db.js");
     linkTicket("g-uk", "thread-uk", "uuid-uk", 52, 1);
-    rest.post.mockResolvedValue({ id: "m22" });
 
-    await handleAction("ticket_status", { ticket_id: "uuid-uk", status: "escalated" });
+    const res = await handleAction("ticket_status", {
+      ticket_id: "uuid-uk",
+      status: "escalated",
+    });
 
-    const body = rest.post.mock.calls[0][1].body as { content: string };
-    expect(body.content).toContain("escalated");
+    // No mapping, so the post's existing tag is never cleared.
+    expect(rest.get).not.toHaveBeenCalled();
+    expect(rest.patch).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ applied_tag: null, archived: false });
+  });
+
+  it("still archives a resolved ticket in a non-forum thread", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-nf", "thread-nf", "uuid-nf", 55, 1);
+    mockChannels([], TAGS, null); // no parent forum
+    rest.patch.mockResolvedValue({});
+
+    await handleAction("ticket_status", { ticket_id: "uuid-nf", status: "resolved" });
+
+    expect(rest.patch).toHaveBeenCalledWith(Routes.channel("thread-nf"), {
+      body: { archived: true },
+    });
   });
 
   it("skips (200) a ticket with no Discord thread", async () => {
@@ -325,7 +381,6 @@ describe("ticket_status", () => {
       ticket_id: "uuid-none",
       status: "resolved",
     });
-    expect(rest.post).not.toHaveBeenCalled();
     expect(rest.patch).not.toHaveBeenCalled();
     expect(res).toEqual({
       status: 200,
@@ -338,5 +393,71 @@ describe("ticket_status", () => {
       status: 400,
       body: { error: "missing ticket_id or status" },
     });
+  });
+});
+
+describe("deleted threads", () => {
+  const unknownChannel = () =>
+    new DiscordAPIError(
+      { message: "Unknown Channel", code: 10003 },
+      10003,
+      404,
+      "GET",
+      "https://discord.com/api/v10/channels/x",
+      { body: {} }
+    );
+
+  it("ticket_status unlinks the ticket and skips when the thread is gone", async () => {
+    const { linkTicket, getTicketForThread } = await import("@/db.js");
+    linkTicket("g-del", "thread-del", "uuid-del", 60, 1);
+    rest.get.mockRejectedValue(unknownChannel());
+
+    const res = await handleAction("ticket_status", {
+      ticket_id: "uuid-del",
+      status: "open",
+    });
+
+    // A 500 here would make the PostHog workflow retry against a dead thread.
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, skipped: "thread deleted" },
+    });
+    expect(getTicketForThread("thread-del")).toBeNull();
+  });
+
+  it("ticket_reply unlinks the ticket and skips when the thread is gone", async () => {
+    const { linkTicket, getTicketForThread } = await import("@/db.js");
+    linkTicket("g-del2", "thread-del2", "uuid-del2", 61, 1);
+    rest.post.mockRejectedValue(unknownChannel());
+
+    const res = await handleAction("ticket_reply", {
+      ticket_id: "uuid-del2",
+      message: "hello",
+    });
+
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, skipped: "thread deleted" },
+    });
+    expect(getTicketForThread("thread-del2")).toBeNull();
+  });
+
+  it("still surfaces other Discord errors", async () => {
+    const { linkTicket } = await import("@/db.js");
+    linkTicket("g-err", "thread-err", "uuid-err", 62, 1);
+    rest.post.mockRejectedValue(
+      new DiscordAPIError(
+        { message: "Missing Permissions", code: 50013 },
+        50013,
+        403,
+        "POST",
+        "https://discord.com/api/v10/channels/x/messages",
+        { body: {} }
+      )
+    );
+
+    await expect(
+      handleAction("ticket_reply", { ticket_id: "uuid-err", message: "hi" })
+    ).rejects.toThrow("Missing Permissions");
   });
 });

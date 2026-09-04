@@ -175,7 +175,7 @@ unknown op / missing required field), 500 (Discord call failed, `{error}`).
 | `connect_guild` | `guild_id, region ("us"\|"eu"), project_api_key` | `{ "ok": true }` |
 | `watch_thread` / `unwatch_thread` | `guild_id, thread_id` | `{ "ok": true }` |
 | `ticket_reply` | `ticket_id` (UUID **or** ticket number), `message` | `{ "ok": true, "thread_id": "...", "message_id": "..." }` |
-| `ticket_status` | `ticket_id`, `status`, `previous_status?` | `{ "ok": true, "thread_id": "...", "archived": bool }` |
+| `ticket_status` | `ticket_id`, `status`, `previous_status?` | `{ "ok": true, "thread_id": "...", "applied_tag": "Open"\|null, "archived": bool }` |
 
 Notes:
 - **Token window.** Use `interaction_token` for the first reply and ephemeral
@@ -194,11 +194,15 @@ Notes:
   on every ticket reply without filtering. Content is truncated to Discord's
   2000-character limit. Requires the tickets integration to have linked the
   thread in the first place (see the README).
-- **`ticket_status`** mirrors a status change into the linked thread and, when
-  `status` is `resolved`, archives it. Same `skipped` behaviour for unlinked
-  tickets. The thread is archived but **not** locked: a reply must still be able
-  to reopen it, which un-archives the thread on Discord's side. Unknown statuses
-  are posted by their raw name rather than dropped.
+- **`ticket_status`** sets the post's **forum tag** to match the ticket status —
+  it posts no message. Status names map to tags `New` / `Open` / `Pending` /
+  `On hold` / `Resolved` (matched case- and separator-insensitively, so
+  `on_hold` finds "On hold"). The bot swaps only the status tag and leaves other
+  tags on the post untouched; a status with no matching tag on that forum leaves
+  the tags alone rather than clearing them, and `previous_status` is accepted but
+  not needed. `resolved` also archives the thread, in the same PATCH — archived
+  but **not** locked, so a reply can still reopen it (which un-archives it on
+  Discord's side). Same `skipped` behaviour for unlinked tickets.
 
 ---
 

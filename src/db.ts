@@ -575,6 +575,9 @@ const deleteAllTicketLinksStmt = db.prepare<[string]>(
 const setTicketNumberStmt = db.prepare<[number, string]>(
   "UPDATE ticket_threads SET ticket_number = ? WHERE thread_id = ?"
 );
+const unlinkTicketStmt = db.prepare<[string]>(
+  "DELETE FROM ticket_threads WHERE thread_id = ?"
+);
 
 /**
  * Record that a thread is backed by a ticket. Idempotent: an existing link for
@@ -591,6 +594,15 @@ export function linkTicket(
   return (
     linkTicketStmt.run(threadId, guildId, ticketId, ticketNumber, now).changes > 0
   );
+}
+
+/**
+ * Forget a thread's ticket link. Used when Discord reports the thread is gone,
+ * so the bot stops retrying against a deleted channel. Returns true if a link
+ * was removed.
+ */
+export function unlinkTicket(threadId: string): boolean {
+  return unlinkTicketStmt.run(threadId).changes > 0;
 }
 
 /**
