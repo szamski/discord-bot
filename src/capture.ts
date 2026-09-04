@@ -54,6 +54,12 @@ function toPersonLike(user: Pick<User, "id" | "username" | "globalName" | "bot">
 /** Build `$set` person properties from a Discord user. */
 function personSet(actor: PersonLike): Record<string, unknown> {
   return {
+    // `name` is what PostHog shows instead of the raw distinct id (its person
+    // display-name lookup checks email/name/username, configurable per project).
+    // The distinct id stays the Discord user id: usernames change, and Discord
+    // recycles released ones, so a username key would split one person's history
+    // on a rename and could merge two people on a reuse.
+    name: actor.globalName ?? actor.username,
     discord_username: actor.username,
     discord_global_name: actor.globalName ?? null,
     discord_is_bot: actor.bot,

@@ -54,8 +54,8 @@ describe("openTicketForPost", () => {
     expect(arg.title).toBe("Crash on launch");
     expect(arg.message).toContain("Steps to reproduce…");
     expect(arg.message).toContain("Tags: bug, macos");
-    // The reporter is named both in the body and as the ticket's author trait.
-    expect(arg.message).toContain("Maciej (@maciej)");
+    // The reporter is NOT repeated in the body — the ticket's person carries them.
+    expect(arg.message).not.toContain("Maciej (@maciej)");
     expect(arg.authorName).toBe("Maciej (@maciej)");
     expect(arg.discordUserId).toBe("3210");
 
@@ -204,12 +204,15 @@ describe("forum tags and ticket number", () => {
       author: AUTHOR,
     });
 
-    expect(client.updateTicket).toHaveBeenCalledWith("uuid-t", { tags: ["bug"] });
+    // Always tagged `discord`, plus the forum's own tag.
+    expect(client.updateTicket).toHaveBeenCalledWith("uuid-t", {
+      tags: ["discord", "bug"],
+    });
     // The widget create endpoint returns no number, so it comes from the update.
     expect(getTicketForThread(threadId)?.ticketNumber).toBe(31);
   });
 
-  it("sends an empty patch when the forum has no tag", async () => {
+  it("still tags `discord` when the forum has no tag of its own", async () => {
     const { guildId, threadId, forumChannelId } = ids();
     addWatchedForum(guildId, forumChannelId, null);
     client.createTicket.mockResolvedValue({ id: "uuid-n", ticketNumber: null });
@@ -229,7 +232,7 @@ describe("forum tags and ticket number", () => {
       author: AUTHOR,
     });
 
-    expect(client.updateTicket).toHaveBeenCalledWith("uuid-n", {});
+    expect(client.updateTicket).toHaveBeenCalledWith("uuid-n", { tags: ["discord"] });
   });
 
   it("keeps the ticket linked when the tag update fails", async () => {

@@ -15,6 +15,12 @@ import {
  * so the bot's existing behaviour is unchanged unless env opts in.
  */
 
+/**
+ * Tag put on every ticket this integration opens, whatever forum it came from,
+ * so Support can filter by origin (`discord` vs email vs widget).
+ */
+export const ORIGIN_TAG = "discord";
+
 /** The Discord author of a forum post or reply. */
 export interface TicketAuthor {
   id: string;
@@ -47,10 +53,13 @@ export async function openTicketForPost(args: {
   if (!ticketsEnabled()) return;
   if (getTicketForThread(args.threadId)) return;
 
+  // The reporter isn't named in the body: the ticket carries them as its person
+  // (Discord id as distinct id, display name from `name`), so repeating it here
+  // would just be noise above every message.
   const tagLine = args.tags.length ? `\n\nTags: ${args.tags.join(", ")}` : "";
   const ticket = await createTicket({
     title: args.title,
-    message: `${args.content}${tagLine}\n\n— from Discord, posted by ${authorLabel(args.author)}`,
+    message: `${args.content}${tagLine}`,
     authorName: authorLabel(args.author),
     discordUserId: args.author.id,
   });
@@ -71,18 +80,20 @@ export async function openTicketForPost(args: {
     );
     return;
   }
-  // Apply the forum's PostHog tag (e.g. "bug" for #bug-reports) and pick up the
-  // ticket number, which the widget create endpoint doesn't return. Best-effort:
-  // the link already stands, so a failure here costs a tag, not the ticket.
+  // Tag the ticket: always `discord` so every ticket from here is filterable by
+  // origin, plus the forum's own tag (e.g. `bug` for #bug-reports). This also
+  // picks up the ticket number, which the widget create endpoint doesn't return.
+  // Best-effort: the link already stands, so a failure costs tags, not the ticket.
   const tag = forumTicketTag(args.guildId, args.forumChannelId);
-  const updated = await updateTicket(ticket.id, tag ? { tags: [tag] } : {});
+  const tags = tag ? [ORIGIN_TAG, tag] : [ORIGIN_TAG];
+  const updated = await updateTicket(ticket.id, { tags });
   if (updated?.ticketNumber != null) {
     setTicketNumber(args.threadId, updated.ticketNumber);
   }
 
   console.log(
     `[tickets] opened ticket ${updated?.ticketNumber ?? ticket.id} for thread ` +
-      `${args.threadId}${tag ? ` (tag: ${tag})` : ""}.`
+      `${args.threadId} (tags: ${tags.join(", ")}).`
   );
 }
 

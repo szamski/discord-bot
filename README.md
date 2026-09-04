@@ -236,11 +236,21 @@ forum's tickets are labelled on arrival:
 Re-running `watch` with a different tag updates it; omitting `tag` clears it.
 `/ph forums list` shows each forum with its tag.
 
-The tag is applied by a follow-up `PATCH /conversations/tickets/:id/`, which also
+Every ticket also gets a fixed **`discord`** tag, whatever forum it came from, so
+Support can filter by origin (`discord` vs email vs widget).
+
+Tags are applied by a follow-up `PATCH /conversations/tickets/:id/`, which also
 reports the `ticket_number` the widget create endpoint doesn't return. Note
 `bulk_update_tags` is **not** usable here: it answers `403 "This action does not
 support personal API key access"`. Tagging therefore needs the optional personal
 API key; without it tickets are still created, just untagged.
+
+The reporter is not named in the ticket body. The ticket carries them as its
+PostHog **person** instead: the Discord user id is the `distinct_id`, and the bot
+sets the `name` person property (global name, else username) so PostHog shows
+"Szamski" rather than a raw id. The id stays the key on purpose — Discord
+usernames change, and released ones get recycled, so keying on a username would
+split one person's history on a rename and could merge two people on a reuse.
 
 ### Wiring the return direction
 
